@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   api,
   getUser,
@@ -39,6 +39,7 @@ import {
   statusLabel,
   tierLabel,
   timeAgo,
+  useConfirm,
 } from "../ui";
 import { ControlCoverage, ControlSummary } from "./ControlCoverage";
 import { ActivityItem } from "./Dashboard";
@@ -575,10 +576,13 @@ function ReviewPanel({ a, onDone }: { a: Assessment; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const needsSignoff = a.computed_tier === "high" || a.computed_tier === "critical";
+  const [dialog, ask] = useConfirm();
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
+    if (decision === "reject" && !(await ask({ title: "Reject this vendor?", body: "The vendor will be recorded as rejected in the audit ledger and shouldn't be engaged. This can't be undone without a new assessment.", confirm: "Reject vendor", danger: true }))) return;
+    if (decision === "accept_risk" && !(await ask({ title: "Accept the open risk?", body: `The open findings are accepted on behalf of ${form.get("accepted_by") || "the business owner"} for ${form.get("acceptance_days")} days, then the acceptance expires and the vendor needs re-review.`, confirm: "Accept risk" }))) return;
     const body: Record<string, unknown> = { decision, rationale: form.get("rationale") };
     const override = form.get("override_tier") as string;
     if (override) body.override_tier = override;
@@ -599,7 +603,8 @@ function ReviewPanel({ a, onDone }: { a: Assessment; onDone: () => void }) {
   }
 
   return (
-    <section className="card accent">
+    <section className="card accent" data-testid="review-panel">
+      {dialog}
       <div className="card-head">
         <div>
           <div className="row" style={{ marginBottom: 4 }}>
@@ -703,8 +708,10 @@ function SignoffPanel({ a, onDone }: { a: Assessment; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const isReviewer = a.reviewed_by === getUser();
+  const [dialog, ask] = useConfirm();
 
   async function submit(decision: "approve" | "reject", rationale: string) {
+    if (decision === "reject" && !(await ask({ title: "Reject at sign-off?", body: "The analyst's recommendation is overruled and the vendor is recorded as rejected in the audit ledger.", confirm: "Reject", danger: true }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -717,7 +724,8 @@ function SignoffPanel({ a, onDone }: { a: Assessment; onDone: () => void }) {
   }
 
   return (
-    <section className="card accent">
+    <section className="card accent" data-testid="signoff-panel">
+      {dialog}
       <div className="card-head">
         <div>
           <div className="row" style={{ marginBottom: 4 }}>
@@ -856,106 +864,100 @@ function VerifiedTag({ f }: { f: Finding }) {
   );
 }
 
-function FindingCard({ f, defaultOpen, evidence, onControl }: {
-  f: Finding;
-  defaultOpen?: boolean;
-  evidence: Evidence | undefined;
-  onControl: (id: string) => void;
-}) {
-  const [open, setOpen] = useState(!!defaultOpen);
+function FindingDetail({ f, evidence, onControl }: { f: Finding; evidence: Evidence | undefined; onControl: (id: string) => void }) {
   const [viewing, setViewing] = useState(false);
   return (
-    <article className="finding">
-      <button className="finding-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className={`finding-stripe ${f.severity}`} />
-        <Icon name="chevronRight" size={16} className={`chev-rot ${open ? "open" : ""}`} />
+    <article className="card finding-detail" aria-labelledby={`finding-${f.id}-title`} data-testid="finding-detail">
+      <header className="card-head">
         <div className="grow">
-          <div className="finding-title">{f.title}</div>
+          <h2 className="card-title" id={`finding-${f.id}-title`}>
+            <TierShape tier={f.severity} size={11} />
+            {f.title}
+          </h2>
           <div className="finding-meta">
             <span className="row" style={{ gap: 4 }}>
               <Icon name={AGENT_META[f.agent]?.icon ?? "sparkles"} size={12} />
               {AGENT_META[f.agent]?.short ?? f.agent}
             </span>
-            <span className="subtle">·</span>
+            <span aria-hidden>·</span>
             <span>{humanize(f.domain)}</span>
-            <span className="subtle">·</span>
+            <span aria-hidden>·</span>
             <span>{humanize(f.confidence)} confidence</span>
+          </div>
+        </div>
+        <div className="card-head-actions">
+          <StatusPill status={f.status} />
+          <TierBadge tier={f.severity} />
+        </div>
+      </header>
+      <div className="card-body stack-sm">
+        <div>
+          <div className="finding-block-label">
+            <Icon name="sparkles" size={12} />
+            Agent rationale
+          </div>
+          <p className="prose" style={{ color: "var(--ink-2)" }}>{f.rationale}</p>
+        </div>
+        <div>
+          <div className="finding-block-label">
+            <Icon name="file" size={12} />
+            Evidence
             <VerifiedTag f={f} />
           </div>
+          {f.evidence_quote ? (
+            <blockquote className={`quote ${f.quote_verified === false ? "quote-warn" : ""}`}>
+              “{f.evidence_quote}”
+              <div className="quote-source" style={{ flexWrap: "wrap" }}>
+                <Icon name={f.quote_verified === false ? "alert" : f.quote_verified ? "check" : "link"} size={12} />
+                <span>
+                  {evidence?.title || evidence?.filename || f.evidence_source}
+                  {f.quote_verified && locationLabel(f.page, f.locator) && ` · ${locationLabel(f.page, f.locator)}`}
+                  {f.section_path && ` · ${f.section_path}`}
+                </span>
+                {f.quote_verified && evidence && (
+                  <button className="btn-sm" style={{ marginLeft: "auto" }} onClick={() => setViewing(true)} data-testid="show-in-document-button">
+                    <Icon name="eye" size={13} />
+                    Show in document
+                  </button>
+                )}
+              </div>
+            </blockquote>
+          ) : (
+            <div className="small muted row">
+              <Icon name="link" size={12} />
+              {f.evidence_source}
+            </div>
+          )}
+          {f.quote_verified === false && (
+            <div className="field-error" style={{ marginTop: 8 }}>
+              <Icon name="alert" size={14} />
+              Unverified: quote not found in the document, so confidence was lowered to low. Check the source before relying on it.
+            </div>
+          )}
         </div>
-        <StatusPill status={f.status} />
-        <TierBadge tier={f.severity} />
-      </button>
-      {open && (
-        <div className="finding-body fade-in">
-          <div className="stack-sm">
-            <div>
-              <div className="finding-block-label">
-                <Icon name="sparkles" size={12} />
-                Agent rationale
-              </div>
-              <p style={{ color: "var(--ink-2)" }}>{f.rationale}</p>
-            </div>
-            <div>
-              <div className="finding-block-label">
-                <Icon name="check" size={12} />
-                Recommendation
-              </div>
-              <div className="recommendation">{f.recommendation}</div>
-            </div>
+        <div>
+          <div className="finding-block-label">
+            <Icon name="check" size={12} />
+            Recommendation
           </div>
+          <div className="recommendation">{f.recommendation}</div>
+        </div>
+        {!!f.control_ids?.length && (
           <div>
             <div className="finding-block-label">
-              <Icon name="file" size={12} />
-              Evidence
+              <Icon name="checklist" size={12} />
+              Linked controls
             </div>
-            {f.evidence_quote ? (
-              <blockquote className={`quote ${f.quote_verified === false ? "quote-warn" : ""}`}>
-                “{f.evidence_quote}”
-                <div className="quote-source" style={{ flexWrap: "wrap" }}>
-                  <Icon name={f.quote_verified === false ? "alert" : f.quote_verified ? "check" : "link"} size={12} />
-                  <span>
-                    {evidence?.title || evidence?.filename || f.evidence_source}
-                    {f.quote_verified && locationLabel(f.page, f.locator) && ` · ${locationLabel(f.page, f.locator)}`}
-                    {f.section_path && ` · ${f.section_path}`}
-                  </span>
-                  {f.quote_verified && evidence && (
-                    <button className="btn-sm" style={{ marginLeft: "auto" }} onClick={() => setViewing(true)}>
-                      <Icon name="eye" size={13} />
-                      Show in document
-                    </button>
-                  )}
-                </div>
-              </blockquote>
-            ) : (
-              <div className="small muted row">
-                <Icon name="link" size={12} />
-                {f.evidence_source}
-              </div>
-            )}
-            {f.quote_verified === false && (
-              <div className="xsmall" style={{ color: "var(--critical-ink)", marginTop: 6 }}>
-                The quote couldn't be matched to the document text, so confidence was lowered to low. Check the source before relying on it.
-              </div>
-            )}
-            {!!f.control_ids?.length && (
-              <div style={{ marginTop: 12 }}>
-                <div className="finding-block-label">
-                  <Icon name="checklist" size={12} />
-                  Checklist controls this rests on
-                </div>
-                <div className="row-wrap" style={{ gap: 4 }}>
-                  {f.control_ids.map((id) => (
-                    <button key={id} className="chip chip-link mono" onClick={() => onControl(id)}>
-                      {id}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            <div className="row-wrap" style={{ gap: 4 }}>
+              {f.control_ids.map((id) => (
+                <button key={id} className="chip chip-link mono" onClick={() => onControl(id)} data-testid={`control-chip-${id}`}>
+                  {id}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
       {viewing && evidence && (
         <DocumentViewer
           target={{ evidence, page: f.page, locator: f.locator, segmentId: f.segment_id, quote: f.evidence_quote }}
@@ -966,14 +968,21 @@ function FindingCard({ f, defaultOpen, evidence, onControl }: {
   );
 }
 
-function Findings({ a, evidence, onControl }: { a: Assessment; evidence: Evidence[]; onControl: (id: string) => void }) {
+function Findings({ a, evidence, onControl, initial }: { a: Assessment; evidence: Evidence[]; onControl: (id: string) => void; initial?: number | null }) {
   const byId = new Map(evidence.map((e) => [e.id, e]));
   const [severity, setSeverity] = useState<Tier | "all">("all");
   const [agent, setAgent] = useState("all");
+  const [q, setQ] = useState("");
+  const [selected, setSelected] = useState<number | null>(initial ?? null);
+  const detailRef = useRef<HTMLDivElement>(null);
   const sorted = [...a.findings].sort((x, y) => SEVERITY_ORDER[x.severity] - SEVERITY_ORDER[y.severity]);
-  const shown = sorted.filter((f) => (severity === "all" || f.severity === severity) && (agent === "all" || f.agent === agent));
+  const needle = q.trim().toLowerCase();
+  const shown = sorted.filter(
+    (f) => (severity === "all" || f.severity === severity) && (agent === "all" || f.agent === agent) && (!needle || f.title.toLowerCase().includes(needle) || (f.control_ids ?? []).some((c) => c.toLowerCase().includes(needle))),
+  );
   const count = (t: Tier) => a.findings.filter((f) => f.severity === t).length;
   const agents = [...new Set(a.findings.map((f) => f.agent))];
+  const current = shown.find((f) => f.id === selected) ?? shown[0];
 
   if (a.findings.length === 0)
     return (
@@ -985,48 +994,82 @@ function Findings({ a, evidence, onControl }: { a: Assessment; evidence: Evidenc
     );
 
   return (
-    <div className="stack-sm">
-      <div className="row-between" style={{ flexWrap: "wrap" }}>
-        <div className="sev-summary" role="group" aria-label="Filter by severity">
-          <button className={`sev-chip ${severity === "all" ? "active" : ""}`} onClick={() => setSeverity("all")} aria-pressed={severity === "all"}>
-            All <span className="count">{a.findings.length}</span>
-          </button>
-          {TIERS.map((t) => (
-            <button key={t} className={`sev-chip ${severity === t ? "active" : ""}`} onClick={() => setSeverity(severity === t ? "all" : t)} aria-pressed={severity === t} disabled={count(t) === 0}>
-              <TierShape tier={t} />
-              {tierLabel(t)} <span className="count">{count(t)}</span>
+    <div className="md-grid" data-testid="findings-workspace">
+      <section className="card md-list" aria-label="Findings list">
+        <header className="card-head">
+          <div>
+            <h2 className="card-title">Findings ({a.findings.length})</h2>
+            <div className="card-sub">Most severe first, from all agents</div>
+          </div>
+        </header>
+        <div className="card-body stack-sm" style={{ paddingBottom: 12 }}>
+          <div className="sev-summary" role="group" aria-label="Filter by severity">
+            <button className={`sev-chip ${severity === "all" ? "active" : ""}`} onClick={() => setSeverity("all")} aria-pressed={severity === "all"} data-testid="severity-chip-all">
+              All <span className="count">{a.findings.length}</span>
             </button>
-          ))}
+            {TIERS.map((t) => (
+              <button key={t} className={`sev-chip ${severity === t ? "active" : ""}`} onClick={() => setSeverity(severity === t ? "all" : t)} aria-pressed={severity === t} disabled={count(t) === 0} data-testid={`severity-chip-${t}`}>
+                <TierShape tier={t} />
+                {tierLabel(t)} <span className="count">{count(t)}</span>
+              </button>
+            ))}
+          </div>
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            <div className="search grow" style={{ width: "auto" }}>
+              <Icon name="search" size={15} />
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search findings or controls" aria-label="Search findings" data-testid="findings-search" />
+            </div>
+            <select value={agent} onChange={(e) => setAgent(e.target.value)} aria-label="Filter by agent" data-testid="findings-agent-select">
+              <option value="all">All agents</option>
+              {agents.map((n) => (
+                <option key={n} value={n}>
+                  {AGENT_LABEL[n] ?? n}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-        <select value={agent} onChange={(e) => setAgent(e.target.value)} aria-label="Filter by agent">
-          <option value="all">All agents</option>
-          {agents.map((n) => (
-            <option key={n} value={n}>
-              {AGENT_LABEL[n] ?? n}
-            </option>
+        <ul className="list md-items">
+          {shown.map((f) => (
+            <li key={f.id}>
+              <button
+                className={`md-item ${current?.id === f.id ? "selected" : ""}`}
+                aria-current={current?.id === f.id ? "true" : undefined}
+                onClick={() => {
+                  setSelected(f.id);
+                  if (window.innerWidth < 1100) setTimeout(() => detailRef.current?.scrollIntoView({ block: "start" }), 0);
+                }}
+                data-testid={`finding-item-${f.id}`}
+              >
+                <TierShape tier={f.severity} />
+                <span className="grow" style={{ minWidth: 0 }}>
+                  <span className="md-title">{f.title}</span>
+                  <span className="md-meta">
+                    {AGENT_META[f.agent]?.short ?? f.agent}
+                    {f.control_ids?.[0] && ` · ${f.control_ids[0]}`}
+                    {f.quote_verified === false && " · unverified"}
+                  </span>
+                </span>
+                <TierBadge tier={f.severity} />
+              </button>
+            </li>
           ))}
-        </select>
+          {shown.length === 0 && (
+            <li>
+              <Empty icon="search" title="No findings match these filters" />
+            </li>
+          )}
+        </ul>
+      </section>
+      <div ref={detailRef} style={{ scrollMarginTop: 80 }}>
+        {current ? <FindingDetail key={current.id} f={current} evidence={current.evidence_id != null ? byId.get(current.evidence_id) : undefined} onControl={onControl} /> : null}
       </div>
-      <Callout tone="ai" icon="link">
-        Every quote is matched back to the source document. Expand a finding for the agent's reasoning, then open the PDF at the exact
-        page with the passage highlighted.
-      </Callout>
-      {shown.map((f, i) => (
-        <FindingCard
-          key={f.id}
-          f={f}
-          defaultOpen={i === 0}
-          evidence={f.evidence_id != null ? byId.get(f.evidence_id) : undefined}
-          onControl={onControl}
-        />
-      ))}
-      {shown.length === 0 && <p className="muted small">No findings match these filters.</p>}
     </div>
   );
 }
 
-function TopFindings({ a, onAll }: { a: Assessment; onAll: () => void }) {
-  const top = [...a.findings].sort((x, y) => SEVERITY_ORDER[x.severity] - SEVERITY_ORDER[y.severity]).slice(0, 3);
+function TopFindings({ a, onOpen }: { a: Assessment; onOpen: (id?: number) => void }) {
+  const top = [...a.findings].sort((x, y) => SEVERITY_ORDER[x.severity] - SEVERITY_ORDER[y.severity]).slice(0, 5);
   if (top.length === 0) return null;
   return (
     <Card
@@ -1035,7 +1078,7 @@ function TopFindings({ a, onAll }: { a: Assessment; onAll: () => void }) {
       subtitle={`${a.findings.length} total, most severe first`}
       flush
       actions={
-        <button className="btn-sm btn-ghost" onClick={onAll}>
+        <button className="btn-sm btn-ghost" onClick={() => onOpen()} data-testid="view-all-findings">
           View all
           <Icon name="chevronRight" size={14} />
         </button>
@@ -1044,17 +1087,18 @@ function TopFindings({ a, onAll }: { a: Assessment; onAll: () => void }) {
       <ul className="list">
         {top.map((f) => (
           <li key={f.id}>
-            <button className="list-item finding-head" onClick={onAll} style={{ padding: "12px 20px" }}>
-              <TierBadge tier={f.severity} />
+            <button className="list-item finding-head" onClick={() => onOpen(f.id)} style={{ padding: "12px 24px" }} data-testid={`top-finding-${f.id}`}>
+              <TierShape tier={f.severity} />
               <div className="grow">
                 <div className="strong">{f.title}</div>
                 <div className="xsmall muted row-wrap" style={{ gap: 6, marginTop: 2 }}>
                   <span>
-                    {AGENT_META[f.agent]?.short} · {humanize(f.domain)} · {f.evidence_source}
+                    {AGENT_META[f.agent]?.short} · {f.control_ids?.[0] ?? humanize(f.domain)}
                   </span>
                   <VerifiedTag f={f} />
                 </div>
               </div>
+              <TierBadge tier={f.severity} />
               <Icon name="chevronRight" size={15} className="chev" />
             </button>
           </li>
@@ -1318,6 +1362,101 @@ function AuditTrail({ vendorId, assessmentId, refreshKey }: { vendorId: number; 
 
 /* ---------- Page ---------- */
 
+/* ---------- Primary action (one per state) ---------- */
+
+type Primary = {
+  label: string;
+  icon: string;
+  style: "ai" | "primary" | "secondary";
+  run?: () => void;
+  disabled?: boolean;
+  reason?: string;
+  waitingOn: string;
+};
+
+function tabKeyHandler(tabs: TabId[], tab: TabId, setTab: (t: TabId) => void) {
+  return (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const i = tabs.indexOf(tab);
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    setTab(tabs[next]);
+    setTimeout(() => document.getElementById(`tab-${tabs[next!]}`)?.focus(), 0);
+  };
+}
+
+function PrimaryButton({ p, starting, testId }: { p: Primary; starting: boolean; testId: string }) {
+  const cls = p.style === "ai" ? "btn-ai" : p.style === "primary" ? "btn-primary" : "";
+  return (
+    <button className={`${cls} btn-lg`} onClick={p.run} aria-disabled={p.disabled || undefined} disabled={starting} data-testid={testId}
+      onClickCapture={(e) => p.disabled && e.preventDefault()} style={p.disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}>
+      {starting ? <span className="spinner" style={{ borderTopColor: "#fff" }} /> : <Icon name={p.icon} size={16} />}
+      {starting ? "Starting…" : p.label}
+    </button>
+  );
+}
+
+function NextStep({ p, secondary, starting }: { p: Primary | null; secondary: ReactNode; starting: boolean }) {
+  return (
+    <Card title="Next step" icon="target" className="next-step">
+      <div className="who" data-testid="next-step-waiting-on">
+        <span className="avatar round" style={{ ["--h" as string]: 215 }}>
+          <Icon name="user" size={15} />
+        </span>
+        <div>
+          <div className="xsmall muted">Waiting on</div>
+          <div className="strong">{p?.waitingOn ?? "Nothing — no action needed"}</div>
+        </div>
+      </div>
+      <div className="actions">
+        {p && p.run && <PrimaryButton p={p} starting={starting} testId="next-step-primary" />}
+        {p?.reason && <div className="small muted">{p.reason}</div>}
+        {secondary}
+      </div>
+    </Card>
+  );
+}
+
+function EvidenceProgress({ evidence, onOpen }: { evidence: EvidenceStatus; onOpen: () => void }) {
+  const c = evidence.counts;
+  const pct = c.required ? Math.round(((c.received + c.waived) / c.required) * 100) : 100;
+  return (
+    <Card
+      title="Evidence progress"
+      icon="file"
+      actions={
+        <button className="btn-sm btn-ghost" onClick={onOpen} data-testid="rail-open-evidence">
+          Open
+          <Icon name="chevronRight" size={14} />
+        </button>
+      }
+    >
+      <div className="stack-sm">
+        <div className="row-between">
+          <span className={`pill ${evidence.ready ? "tone-good" : "tone-warning"}`}>
+            <span className="dot" />
+            {evidence.ready ? "Ready to assess" : "Gathering evidence"}
+          </span>
+          <span className="small muted">{pct}% of required</span>
+        </div>
+        <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Required evidence on file">
+          <span style={{ width: `${pct}%` }} />
+        </div>
+        <div className="tiles" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+          <div className="tile tile-good"><span className="n">{c.received}</span><span className="l">On file</span></div>
+          <div className="tile tile-warn"><span className="n">{c.remaining}</span><span className="l">Still owed</span></div>
+          <div className="tile tile-info"><span className="n">{c.waived}</span><span className="l">Explained</span></div>
+          <div className="tile"><span className="n">{c.processing}</span><span className="l">Being read</span></div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export function VendorDetail({ id }: { id: number }) {
   const [vendor, setVendor] = useState<Vendor | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1325,12 +1464,18 @@ export function VendorDetail({ id }: { id: number }) {
   const [tab, setTab] = useState<TabId>("overview");
   const [docsVersion, setDocsVersion] = useState(0);
   const [focusControl, setFocusControl] = useState<string | null>(null);
+  const [focusFinding, setFocusFinding] = useState<number | null>(null);
   const [monitoring, setMonitoring] = useState<VendorMonitoring | null>(null);
   const [evidence, setEvidence] = useState<EvidenceStatus | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<number>(Date.now());
+  const [, tick] = useState(0);
   const clearFocus = useCallback(() => setFocusControl(null), []);
 
   const load = useCallback(() => {
-    api.vendor(id).then(setVendor).catch((e: Error) => setError(e.message));
+    api.vendor(id).then((v) => {
+      setVendor(v);
+      setUpdatedAt(Date.now());
+    }).catch((e: Error) => setError(e.message));
     api.vendorMonitoring(id).then(setMonitoring).catch(() => setMonitoring(null));
     api.evidenceStatus(id).then(setEvidence).catch(() => setEvidence(null));
   }, [id]);
@@ -1340,19 +1485,22 @@ export function VendorDetail({ id }: { id: number }) {
   }, [load]);
 
   useEffect(load, [load]);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 5000);
+    return () => clearInterval(t);
+  }, []);
   useCrumb(vendor?.name);
 
   const a = vendor?.latest_assessment ?? null;
   const readingDocs = vendor?.evidence.some((e) => e.processing_status === "pending" || e.processing_status === "processing");
   const gathering = evidence !== null && !evidence.ready;
+  const polling = !!(readingDocs || (a && IN_FLIGHT.has(a.status)) || evidence?.steps.some((s) => s.state === "active") || evidence?.trust_portal.status === "awaiting_captcha");
   useEffect(() => {
     // Quickly while something is running; slowly while we wait on the vendor or the trust portal's timer.
-    const busy = readingDocs || (a && IN_FLIGHT.has(a.status)) || evidence?.steps.some((s) => s.state === "active")
-      || evidence?.trust_portal.status === "awaiting_captcha";
-    if (!busy && !gathering) return;
-    const timer = setInterval(load, busy ? 3000 : 15000);
+    if (!polling && !gathering) return;
+    const timer = setInterval(load, polling ? 3000 : 15000);
     return () => clearInterval(timer);
-  }, [a, readingDocs, gathering, evidence, load]);
+  }, [polling, gathering, load]);
 
   const showControl = useCallback((controlId: string) => {
     setFocusControl(controlId);
@@ -1373,8 +1521,18 @@ export function VendorDetail({ id }: { id: number }) {
     }
   }
 
+  const goGate = () => {
+    setTab("overview");
+    setTimeout(() => {
+      const el = document.getElementById("human-gate");
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      el?.querySelector<HTMLElement>("input, textarea, button")?.focus({ preventScroll: true });
+    }, 50);
+  };
+
   if (!vendor) return error ? <ErrorBanner error={error} /> : <LoadingPage />;
 
+  const user = getUser();
   const canStart = !a || FINAL.has(a.status);
   const waitingOnEvidence = !!evidence && !evidence.ready;
   const scored = !!(a && a.score_breakdown);
@@ -1383,6 +1541,37 @@ export function VendorDetail({ id }: { id: number }) {
   const openAlerts = monitoring?.events.filter((e) => e.status === "new") ?? [];
   const notMet = a ? Object.values(a.control_summary ?? {}).reduce((n, c) => n + (c.not_met ?? 0), 0) : 0;
   const hasControls = !!a && Object.keys(a.control_summary ?? {}).length > 0;
+  const isApprover = user === "sam.approver";
+
+  const rerun: Primary = { label: "Re-run assessment", icon: "refresh", style: "secondary", run: () => start(), disabled: waitingOnEvidence, reason: waitingOnEvidence ? `Waiting for the evidence: ${evidence!.blockers.join(" ")}` : undefined, waitingOn: "Analyst (optional re-run)" };
+  let primary: Primary | null;
+  if (!a) {
+    primary = waitingOnEvidence
+      ? { label: "Gathering evidence…", icon: "clock", style: "ai", run: () => {}, disabled: true, reason: `Waiting for: ${evidence!.blockers.join(" ") || "evidence collection"}`, waitingOn: "Evidence collection / the vendor" }
+      : { label: "Run AI assessment", icon: "sparkles", style: "ai", run: () => start(), waitingOn: "Analyst — start the AI assessment" };
+  } else if (IN_FLIGHT.has(a.status)) {
+    primary = { label: "Assessment running", icon: "sparkles", style: "ai", waitingOn: "AI agents (Security, Privacy, AI-Vendor)" };
+  } else if (a.status === "awaiting_review") {
+    primary = isApprover
+      ? { label: "Awaiting analyst review", icon: "clock", style: "primary", run: goGate, disabled: true, reason: "Read-only for approvers until an analyst reviews it.", waitingOn: "Analyst review" }
+      : { label: "Continue analyst review", icon: "checklist", style: "primary", run: goGate, waitingOn: "Analyst review" };
+  } else if (a.status === "awaiting_signoff") {
+    primary =
+      a.reviewed_by === user
+        ? { label: "Review and sign off", icon: "users", style: "primary", run: () => {}, disabled: true, reason: "A different person must sign off (segregation of duties).", waitingOn: "Independent approver" }
+        : isApprover
+          ? { label: "Review and sign off", icon: "users", style: "primary", run: goGate, waitingOn: "Approver sign-off" }
+          : { label: "Awaiting sign-off", icon: "clock", style: "primary", run: goGate, disabled: true, reason: "Sam (risk approver) signs off High and Critical vendors.", waitingOn: "Approver sign-off" };
+  } else if (a.status === "awaiting_evidence") {
+    primary = { label: "Open questionnaire", icon: "mail", style: "primary", run: () => setTab("questionnaire"), waitingOn: "The vendor's answers" };
+  } else if (vendor.status === "re_review_required" && monitoring?.enabled) {
+    primary = { label: "Review alerts", icon: "radar", style: "primary", run: () => setTab("monitoring"), waitingOn: "Analyst — triage monitoring alerts" };
+  } else if (a.status === "failed") {
+    primary = { ...rerun, style: "primary", waitingOn: "Analyst — fix the cause and re-run" };
+  } else {
+    primary = { ...rerun, waitingOn: "Nobody — decision recorded" };
+  }
+  const showRerunSecondary = canStart && primary.label !== "Re-run assessment" && !!a;
 
   const tabs: [TabId, string, ReactNode?][] = [
     ["overview", "Overview", awaitingYou ? <span className="tab-count alert">Action</span> : undefined],
@@ -1393,10 +1582,27 @@ export function VendorDetail({ id }: { id: number }) {
     ...(monitoring?.enabled ? [["monitoring", "Monitoring", openAlerts.length ? <span className="tab-count alert">{openAlerts.length} new</span> : undefined] as [TabId, string, ReactNode?]] : []),
     ["audit", "Audit trail"],
   ];
+  const onTabKey = tabKeyHandler(tabs.map(([t]) => t), tab, setTab);
+  const secs = Math.round((Date.now() - updatedAt) / 1000);
+
+  const secondary = (
+    <>
+      {showRerunSecondary && (
+        <button className="btn" onClick={() => start()} disabled={starting || waitingOnEvidence} data-testid="rerun-secondary-button">
+          <Icon name="refresh" size={15} />
+          Re-run assessment
+        </button>
+      )}
+      <button className="btn" onClick={() => setTab("evidence")} data-testid="open-evidence-secondary">
+        <Icon name="file" size={15} />
+        Evidence &amp; trust centre
+      </button>
+    </>
+  );
 
   return (
     <div className="stack">
-      <div className="vhead">
+      <div className="vhead" data-testid="vendor-header">
         <div className="vhead-id">
           <Avatar name={vendor.name} size="lg" />
           <div className="grow">
@@ -1437,218 +1643,220 @@ export function VendorDetail({ id }: { id: number }) {
                 </span>
               )}
             </div>
-            {vendor.description && <p className="vhead-desc">{vendor.description}</p>}
+            {vendor.description && (
+              <details className="vhead-desc">
+                <summary className="truncate" style={{ cursor: "pointer", listStyle: "none" }}>{vendor.description}</summary>
+                <p className="prose">{vendor.description}</p>
+              </details>
+            )}
           </div>
         </div>
-        <div className="stat-strip">
-          <div className="stat">
-            <span className="stat-label">Inherent risk</span>
-            <TierBadge tier={vendor.inherent_tier} />
+        <div className="vhead-side">
+          <div className="stat-groups">
+            <div className="stat-strip" role="group" aria-label="Risk">
+              <div className="stat">
+                <span className="stat-label">Inherent risk</span>
+                <TierBadge tier={vendor.inherent_tier} />
+              </div>
+              <div className="stat">
+                <span className="stat-label">Residual score</span>
+                <span className="stat-value" data-testid="stat-residual-score">
+                  {a?.residual_score != null ? Math.round(a.residual_score * 10) / 10 : "—"}
+                  {a?.residual_score != null && <small>/ 100</small>}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Current tier</span>
+                <TierBadge tier={vendor.current_tier} />
+              </div>
+            </div>
+            <div className="stat-strip" role="group" aria-label="Counts">
+              <div className="stat">
+                <span className="stat-label">Evidence</span>
+                <span className="stat-value">{vendor.evidence.length}</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Findings</span>
+                <span className="stat-value">{a?.findings.length ?? "—"}</span>
+              </div>
+            </div>
           </div>
-          <div className="stat">
-            <span className="stat-label">Residual score</span>
-            <span className="stat-value">
-              {a?.residual_score != null ? Math.round(a.residual_score * 10) / 10 : "—"}
-              {a?.residual_score != null && <small>/ 100</small>}
-            </span>
+          <div className="primary-slot sticky-mobile" data-testid="primary-action-slot">
+            {primary.run ? (
+              <PrimaryButton p={primary} starting={starting} testId="primary-action-button" />
+            ) : (
+              <span className="pill tone-info" role="status">
+                <span className="spinner" style={{ width: 12, height: 12 }} />
+                {primary.label}
+              </span>
+            )}
           </div>
-          <div className="stat">
-            <span className="stat-label">Current tier</span>
-            <TierBadge tier={vendor.current_tier} />
-          </div>
-          <div className="stat">
-            <span className="stat-label">Evidence</span>
-            <span className="stat-value">{vendor.evidence.length}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Findings</span>
-            <span className="stat-value">{a?.findings.length ?? "—"}</span>
-          </div>
+          {primary.reason && <div className="primary-reason" data-testid="primary-action-reason">{primary.reason}</div>}
         </div>
-        {canStart && (
-          <div className="vhead-actions">
-            <button
-              className="btn-ai btn-lg"
-              onClick={() => start()}
-              disabled={starting || waitingOnEvidence}
-              title={waitingOnEvidence ? `Waiting for the evidence: ${evidence!.blockers.join(" ")}` : undefined}
-            >
-              {starting ? <span className="spinner" style={{ borderTopColor: "#fff" }} /> : <Icon name={waitingOnEvidence ? "clock" : a ? "refresh" : "sparkles"} size={16} />}
-              {starting ? "Starting…" : waitingOnEvidence ? "Gathering evidence…" : a ? "Re-run assessment" : "Run AI assessment"}
-            </button>
-          </div>
-        )}
       </div>
 
       <ErrorBanner error={error} />
 
-      <div className="tabs" role="tablist">
+      <div className="tabs" role="tablist" aria-label="Vendor sections" onKeyDown={onTabKey}>
         {tabs.map(([tid, label, extra]) => (
-          <button key={tid} role="tab" aria-selected={tab === tid} className={`tab ${tab === tid ? "active" : ""}`} onClick={() => setTab(tid)}>
+          <button
+            key={tid}
+            id={`tab-${tid}`}
+            role="tab"
+            aria-selected={tab === tid}
+            aria-controls={`panel-${tid}`}
+            tabIndex={tab === tid ? 0 : -1}
+            className={`tab ${tab === tid ? "active" : ""}`}
+            onClick={() => setTab(tid)}
+            data-testid={`vendor-tab-${tid}`}
+          >
             {label}
             {extra}
           </button>
         ))}
       </div>
 
-      {tab === "overview" && (
-        <div className="stack fade-in">
-          <Card title="Assessment progress" subtitle="One vendor, end to end">
-            <Workflow vendor={vendor} a={a} />
-          </Card>
-          {vendor.status === "re_review_required" && (
-            <Callout tone="danger" icon="alert" title="Flagged for re-review">
-              <div className="row-between" style={{ flexWrap: "wrap" }}>
-                <span>Continuous monitoring raised a critical event or an analyst escalated one. Re-run the assessment once it's investigated.</span>
-                {monitoring?.enabled && (
-                  <button className="btn-sm" onClick={() => setTab("monitoring")}>
-                    View alerts
-                    <Icon name="chevronRight" size={14} />
-                  </button>
-                )}
+      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="fade-in" key={tab}>
+        {tab === "overview" && (
+          <div className="grid-8-4">
+            <div className="stack">
+              <Card title="Assessment progress" subtitle="One vendor, end to end" actions={(polling || gathering) && <span className="xsmall muted" aria-live="off">Updated {secs < 5 ? "just now" : `${secs}s ago`}</span>}>
+                <Workflow vendor={vendor} a={a} />
+              </Card>
+              {vendor.status === "re_review_required" ? (
+                <Callout tone="danger" icon="alert" title="Flagged for re-review">
+                  <div className="row-between" style={{ flexWrap: "wrap" }}>
+                    <span>Continuous monitoring raised a critical event or an analyst escalated one. Re-run the assessment once it's investigated.</span>
+                    {monitoring?.enabled && (
+                      <button className="btn-sm" onClick={() => setTab("monitoring")}>
+                        View alerts
+                        <Icon name="chevronRight" size={14} />
+                      </button>
+                    )}
+                  </div>
+                </Callout>
+              ) : a?.status === "failed" ? (
+                <Callout tone="danger" title="Assessment failed">
+                  <div className="mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflow: "auto", marginTop: 4 }}>
+                    {a.error}
+                  </div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    The failure is recorded in the audit trail. Fix the cause and re-run.
+                  </div>
+                </Callout>
+              ) : openAlerts.length > 0 ? (
+                <Callout tone="warning" icon="radar" title={`${openAlerts.length} new monitoring alert${openAlerts.length === 1 ? "" : "s"}`}>
+                  <div className="row-between" style={{ flexWrap: "wrap" }}>
+                    <span className="truncate" style={{ maxWidth: 640 }}>
+                      {openAlerts[0].title}
+                    </span>
+                    <button className="btn-sm" onClick={() => setTab("monitoring")}>
+                      Triage
+                      <Icon name="chevronRight" size={14} />
+                    </button>
+                  </div>
+                </Callout>
+              ) : a?.status === "awaiting_evidence" ? (
+                <Callout tone="info" icon="mail" title="More evidence requested from the vendor">
+                  <div className="row-between" style={{ flexWrap: "wrap" }}>
+                    <span>A gap questionnaire targeting the open findings is being prepared. Review it and send it to the vendor.</span>
+                    <button className="btn-sm btn-primary" onClick={() => setTab("questionnaire")}>
+                      Open questionnaire
+                      <Icon name="chevronRight" size={14} />
+                    </button>
+                  </div>
+                </Callout>
+              ) : null}
+              {a && IN_FLIGHT.has(a.status) && !a.reviewed_by && <AgentsRunning />}
+              <div id="human-gate" style={{ scrollMarginTop: 80 }}>
+                {a?.status === "awaiting_review" && scored && <ReviewPanel a={a} onDone={load} />}
+                {a?.status === "awaiting_signoff" && scored && <SignoffPanel a={a} onDone={load} />}
               </div>
-            </Callout>
-          )}
-          {vendor.status !== "re_review_required" && openAlerts.length > 0 && (
-            <Callout tone="warning" icon="radar" title={`${openAlerts.length} new monitoring alert${openAlerts.length === 1 ? "" : "s"}`}>
-              <div className="row-between" style={{ flexWrap: "wrap" }}>
-                <span className="truncate" style={{ maxWidth: 640 }}>
-                  {openAlerts[0].title}
-                </span>
-                <button className="btn-sm" onClick={() => setTab("monitoring")}>
-                  Triage
-                  <Icon name="chevronRight" size={14} />
-                </button>
-              </div>
-            </Callout>
-          )}
-          {a && IN_FLIGHT.has(a.status) && !a.reviewed_by && <AgentsRunning />}
-          {a?.status === "failed" && (
-            <Callout tone="danger" title="Assessment failed">
-              <div className="mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflow: "auto", marginTop: 4 }}>
-                {a.error}
-              </div>
-              <div className="small" style={{ marginTop: 6 }}>
-                The failure is recorded in the audit trail. Fix the cause and re-run.
-              </div>
-            </Callout>
-          )}
-          {a?.status === "awaiting_review" && scored && <ReviewPanel a={a} onDone={load} />}
-          {a?.status === "awaiting_signoff" && scored && <SignoffPanel a={a} onDone={load} />}
-          {a?.status === "awaiting_evidence" && (
-            <Callout tone="info" icon="mail" title="More evidence requested from the vendor">
-              <div className="row-between" style={{ flexWrap: "wrap" }}>
-                <span>A gap questionnaire targeting the open findings is being prepared. Review it and send it to the vendor.</span>
-                <button className="btn-sm btn-primary" onClick={() => setTab("questionnaire")}>
-                  Open questionnaire
-                  <Icon name="chevronRight" size={14} />
-                </button>
-              </div>
-            </Callout>
-          )}
 
-          {canStart && evidence && (!a || !evidence.ready) && (
-            <EvidenceStatusPanel vendorId={vendor.id} status={evidence} onChange={onDocumentsChange} onStartAnyway={(reason) => start(reason)} starting={starting} />
-          )}
+              {canStart && evidence && (!a || !evidence.ready) && (
+                <EvidenceStatusPanel vendorId={vendor.id} status={evidence} onChange={onDocumentsChange} onStartAnyway={(reason) => start(reason)} starting={starting} />
+              )}
 
-          {!a && (
+              {!a && (
+                <Card>
+                  <Empty icon="sparkles" title="No assessment yet">
+                    The vendor's public trust centre and portal are read automatically, and what's behind an access request is requested for you.
+                    The AI assessment starts when the evidence is in; every control is checked against it, and every citation is verified against the source.
+                  </Empty>
+                </Card>
+              )}
+
+              {scored && (
+                <>
+                  <ScoreSummary a={a!} />
+                  {hasControls && <ControlSummary a={a!} onOpen={() => setTab("controls")} />}
+                  <TopFindings
+                    a={a!}
+                    onOpen={(fid) => {
+                      setFocusFinding(fid ?? null);
+                      setTab("findings");
+                    }}
+                  />
+                  <details className="card agent-disclosure" open>
+                    <summary className="card-head" style={{ cursor: "pointer", paddingBottom: 16 }}>
+                      <h2 className="card-title">
+                        <Icon name="sparkles" size={16} />
+                        Agent assessments
+                      </h2>
+                    </summary>
+                    <div className="card-body stack">
+                      <AgentPanels a={a!} />
+                      <AgentDetails a={a!} />
+                    </div>
+                  </details>
+                </>
+              )}
+            </div>
+
+            <aside className="rail" aria-label="Vendor summary">
+              <NextStep p={primary} secondary={secondary} starting={starting} />
+              {evidence && <EvidenceProgress evidence={evidence} onOpen={() => setTab("evidence")} />}
+              <Profile vendor={vendor} />
+              {scored && <DecisionRecord a={a!} />}
+              <RiskAcceptances vendor={vendor} />
+            </aside>
+          </div>
+        )}
+
+        {tab === "findings" &&
+          (scored ? (
+            <Findings a={a!} evidence={vendor.evidence} onControl={showControl} initial={focusFinding} />
+          ) : (
             <Card>
-              <Empty icon="sparkles" title="No assessment yet">
-                The vendor's public trust centre and portal are read automatically, and what's behind an access request is requested for you.
-                The AI assessment starts when the evidence is in; every control is checked against it, and every citation is verified against the source.
-                <div className="row" style={{ justifyContent: "center", marginTop: 14 }}>
-                  <button className="btn" onClick={() => setTab("evidence")}>
-                    <Icon name="file" size={15} />
-                    Evidence & trust centre
-                  </button>
-                  <button className="btn-ai" onClick={() => start()} disabled={starting || waitingOnEvidence} title={waitingOnEvidence ? evidence!.blockers.join(" ") : undefined}>
-                    <Icon name={waitingOnEvidence ? "clock" : "sparkles"} size={15} />
-                    {waitingOnEvidence ? "Waiting for evidence" : "Run AI assessment"}
-                  </button>
-                </div>
+              <Empty icon="alert" title="No findings yet">
+                Findings appear once an AI assessment completes.
               </Empty>
             </Card>
-          )}
+          ))}
 
-          {scored ? (
-            <div className="grid split">
-              <div className="stack">
-                <ScoreSummary a={a!} />
-                {hasControls && <ControlSummary a={a!} onOpen={() => setTab("controls")} />}
-                <TopFindings a={a!} onAll={() => setTab("findings")} />
-              </div>
-              <div className="stack">
-                <Profile vendor={vendor} />
-                <DecisionRecord a={a!} />
-                <RiskAcceptances vendor={vendor} />
-              </div>
-            </div>
-          ) : (
-            <div className="grid cols-2">
-              <Profile vendor={vendor} />
-              <RiskAcceptances vendor={vendor} />
-            </div>
-          )}
+        {tab === "controls" && hasControls && <ControlCoverage a={a!} evidence={vendor.evidence} focus={focusControl} onFocused={clearFocus} />}
 
-          {scored && (
-            <>
-              <div className="section-title">Agent assessments</div>
-              <AgentPanels a={a!} />
-              <AgentDetails a={a!} />
-            </>
-          )}
-        </div>
-      )}
-
-      {tab === "findings" &&
-        (scored ? (
-          <div className="fade-in">
-            <Findings a={a!} evidence={vendor.evidence} onControl={showControl} />
+        {tab === "evidence" && (
+          <div className="stack">
+            {evidence && <EvidenceStatusPanel vendorId={vendor.id} status={evidence} onChange={onDocumentsChange} onStartAnyway={(reason) => start(reason)} starting={starting} />}
+            <TrustCenterPanel vendorId={vendor.id} hasWebsite={!!vendor.domain} refreshKey={`${vendor.evidence.length}-${a?.status}`} onChange={onDocumentsChange} />
+            <EvidencePanel vendor={vendor} onChange={onDocumentsChange} />
           </div>
-        ) : (
-          <Card>
-            <Empty icon="alert" title="No findings yet">
-              Findings appear once an AI assessment completes.
-            </Empty>
-          </Card>
-        ))}
+        )}
 
-      {tab === "controls" && hasControls && (
-        <div className="fade-in">
-          <ControlCoverage a={a!} evidence={vendor.evidence} focus={focusControl} onFocused={clearFocus} />
-        </div>
-      )}
-
-      {tab === "evidence" && (
-        <div className="stack fade-in">
-          {evidence && <EvidenceStatusPanel vendorId={vendor.id} status={evidence} onChange={onDocumentsChange} onStartAnyway={(reason) => start(reason)} starting={starting} />}
-          <TrustCenterPanel vendorId={vendor.id} hasWebsite={!!vendor.domain} refreshKey={`${vendor.evidence.length}-${a?.status}`} onChange={onDocumentsChange} />
-          <EvidencePanel vendor={vendor} onChange={onDocumentsChange} />
-        </div>
-      )}
-
-      {tab === "questionnaire" && (
-        <div className="fade-in">
+        {tab === "questionnaire" && (
           <QuestionnairePanel
             vendorId={vendor.id}
             vendorContact={vendor.vendor_contact_email}
             refreshKey={`${vendor.status}-${a?.id}-${a?.status}-${docsVersion}`}
             hasAssessment={!!a?.score_breakdown}
           />
-        </div>
-      )}
+        )}
 
-      {tab === "monitoring" && (
-        <div className="fade-in">
-          <MonitoringPanel vendorId={vendor.id} refreshKey={`${vendor.status}-${a?.status}`} onChange={load} />
-        </div>
-      )}
+        {tab === "monitoring" && <MonitoringPanel vendorId={vendor.id} refreshKey={`${vendor.status}-${a?.status}`} onChange={load} />}
 
-      {tab === "audit" && (
-        <div className="fade-in">
-          <AuditTrail vendorId={vendor.id} assessmentId={a?.id ?? null} refreshKey={`${vendor.status}-${a?.status}`} />
-        </div>
-      )}
+        {tab === "audit" && <AuditTrail vendorId={vendor.id} assessmentId={a?.id ?? null} refreshKey={`${vendor.status}-${a?.status}`} />}
+      </div>
     </div>
   );
 }

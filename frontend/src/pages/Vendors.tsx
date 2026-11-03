@@ -5,6 +5,19 @@ import { VendorTable } from "./Dashboard";
 
 const PAGE_SIZE = 10;
 const TIER_RANK: Record<Tier, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const STAGES: [id: string, label: string, statuses: string[] | null][] = [
+  ["all", "All vendors", null],
+  ["group:assessment", "In assessment", ["intake", "in_assessment"]],
+  ["group:review", "Awaiting review", ["awaiting_review"]],
+  ["group:signoff", "Awaiting sign-off", ["awaiting_signoff"]],
+  ["group:approved", "Approved", ["approved", "approved_with_accepted_risk"]],
+  ["group:attention", "Needs attention", ["failed", "re_review_required", "acceptance_expired", "awaiting_evidence", "rejected"]],
+];
+const inStage = (stage: string, s: string) => {
+  if (stage === "all") return true;
+  const group = STAGES.find(([id]) => id === stage);
+  return group ? group[2]!.includes(s) : s === stage;
+};
 
 export function Vendors({ query }: { query: string }) {
   const [vendors, setVendors] = useState<VendorSummary[] | null>(null);
@@ -31,7 +44,7 @@ export function Vendors({ query }: { query: string }) {
     const list = (vendors ?? []).filter(
       (v) =>
         (tier === "all" || v.current_tier === tier) &&
-        (status === "all" || v.status === status) &&
+        inStage(status, v.status) &&
         (!needle ||
           [v.name, v.domain ?? "", humanize(v.category), v.business_owner].some((s) => s.toLowerCase().includes(needle))),
     );
@@ -48,6 +61,14 @@ export function Vendors({ query }: { query: string }) {
   if (!vendors) return <LoadingPage />;
 
   const count = (t: Tier) => vendors.filter((v) => v.current_tier === t).length;
+  const stageCount = (id: string) => vendors.filter((v) => inStage(id, v.status)).length;
+  const kpis: [string, string, number, string][] = [
+    ["Total vendors", "neutral", vendors.length, "all"],
+    ["In assessment", "info", stageCount("group:assessment"), "group:assessment"],
+    ["Awaiting sign-off", "warning", stageCount("group:signoff"), "group:signoff"],
+    ["Approved", "good", stageCount("group:approved"), "group:approved"],
+    ["Needs attention", "critical", stageCount("group:attention"), "group:attention"],
+  ];
   const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const from = (current - 1) * PAGE_SIZE;
@@ -60,40 +81,70 @@ export function Vendors({ query }: { query: string }) {
         title="Vendor inventory"
         sub="Every third party under assessment or approved, with its current risk tier and where it sits in the workflow."
         actions={
-          <a className="btn btn-primary" href="#/vendors/new">
+          <a className="btn btn-primary" href="#/vendors/new" data-testid="new-vendor-button">
             <Icon name="plus" size={15} />
             New vendor request
           </a>
         }
       />
 
+      <div className="kpi-strip" data-testid="vendors-kpis">
+        {kpis.map(([label, tone, n, stage], i) => (
+          <button
+            key={label}
+            className={`kpi-cell tone-${tone}`}
+            style={{ height: "auto", alignItems: "flex-start", textAlign: "left", boxShadow: "none", whiteSpace: "normal" }}
+            onClick={() => setFilter(setStatus, stage)}
+            aria-pressed={status === stage}
+            data-testid={`vendors-kpi-${i}`}
+          >
+            <span className="kpi-label">{label}</span>
+            <span className="kpi-value">{n}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="tabs stage-tabs" role="group" aria-label="Workflow stage">
+        {STAGES.map(([id, label]) => (
+          <button key={id} className={`tab ${status === id ? "active" : ""}`} aria-pressed={status === id} onClick={() => setFilter(setStatus, id)} data-testid={`stage-tab-${id.replace("group:", "")}`}>
+            {label}
+            <span className="tab-count">{stageCount(id)}</span>
+          </button>
+        ))}
+      </div>
+
       <Card flush>
         <div className="toolbar">
           <div className="search">
             <Icon name="search" size={15} />
-            <input type="search" value={q} onChange={(e) => setFilter(setQ, e.target.value)} placeholder="Filter by name, domain, category, owner" aria-label="Filter vendors" />
+            <input type="search" value={q} onChange={(e) => setFilter(setQ, e.target.value)} placeholder="Filter by name, domain, category, owner" aria-label="Filter vendors" data-testid="vendors-filter-input" />
           </div>
           <div className="sev-summary" role="group" aria-label="Filter by tier">
-            <button className={`sev-chip ${tier === "all" ? "active" : ""}`} onClick={() => setFilter(setTier, "all")} aria-pressed={tier === "all"}>
+            <button className={`sev-chip ${tier === "all" ? "active" : ""}`} onClick={() => setFilter(setTier, "all")} aria-pressed={tier === "all"} data-testid="tier-chip-all">
               All <span className="count">{vendors.length}</span>
             </button>
             {TIERS.map((t) => (
-              <button key={t} className={`sev-chip ${tier === t ? "active" : ""}`} onClick={() => setFilter(setTier, tier === t ? "all" : t)} aria-pressed={tier === t}>
+              <button key={t} className={`sev-chip ${tier === t ? "active" : ""}`} onClick={() => setFilter(setTier, tier === t ? "all" : t)} aria-pressed={tier === t} data-testid={`tier-chip-${t}`}>
                 <TierShape tier={t} />
                 {tierLabel(t)} <span className="count">{count(t)}</span>
               </button>
             ))}
           </div>
           <div className="row" style={{ marginLeft: "auto" }}>
-            <select value={status} onChange={(e) => setFilter(setStatus, e.target.value)} aria-label="Filter by workflow stage">
+            <select value={status} onChange={(e) => setFilter(setStatus, e.target.value)} aria-label="Filter by workflow stage" data-testid="vendors-stage-select">
               <option value="all">All stages</option>
+              {STAGES.slice(1).map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label} (all)
+                </option>
+              ))}
               {statuses.map((s) => (
                 <option key={s} value={s}>
                   {statusLabel(s)}
                 </option>
               ))}
             </select>
-            <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
+            <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort" data-testid="vendors-sort-select">
               <option value="risk">Sort: highest risk</option>
               <option value="recent">Sort: most recent</option>
               <option value="name">Sort: name</option>
@@ -102,12 +153,28 @@ export function Vendors({ query }: { query: string }) {
         </div>
         {shown.length === 0 ? (
           <Empty icon="search" title={vendors.length ? "No vendors match these filters" : "No vendors yet"}>
-            {vendors.length ? "Try clearing the search or tier filter." : <a href="#/vendors/new">Submit the first vendor request.</a>}
+            {vendors.length ? (
+              <button
+                className="btn-sm"
+                style={{ marginTop: 8 }}
+                onClick={() => {
+                  setQ("");
+                  setTier("all");
+                  setStatus("all");
+                  setPage(1);
+                }}
+                data-testid="clear-filters-button"
+              >
+                Clear filters
+              </button>
+            ) : (
+              <a href="#/vendors/new">Submit the first vendor request.</a>
+            )}
           </Empty>
         ) : (
           <>
             <VendorTable vendors={visible} />
-            <div className="pager">
+            <div className="pager" data-testid="vendors-pager">
               <span>
                 Showing {from + 1}–{from + visible.length} of {shown.length} vendor{shown.length === 1 ? "" : "s"}
                 {shown.length !== vendors.length && <span className="muted"> (filtered from {vendors.length})</span>}

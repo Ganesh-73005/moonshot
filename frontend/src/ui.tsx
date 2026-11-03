@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Tier } from "./api";
 
 /* ---------- Icons (24px grid, stroke) ---------- */
@@ -480,7 +480,7 @@ export function Gauge({ value, tier, label, muted, size = 132 }: { value: number
           fill="none"
           stroke={muted ? "var(--ink-4)" : "var(--accent)"}
           strokeWidth={stroke}
-          strokeLinecap="round"
+          strokeLinecap={f > 0 ? "round" : "butt"}
           strokeDasharray={`${c * f} ${c}`}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
@@ -580,3 +580,56 @@ export const AGENT_META: Record<string, { short: string; icon: string; blurb: st
   privacy: { short: "Privacy", icon: "eye", blurb: "Data classification, residency, transfers, sub-processors" },
   ai_vendor: { short: "AI-Vendor", icon: "cpu", blurb: "Model providers, AI security, transparency, governance" },
 };
+
+/* ---------- Confirm dialog (replaces window.confirm; focus trapped, Esc cancels, focus returns) ---------- */
+
+type ConfirmOpts = { title: string; body: ReactNode; confirm: string; danger?: boolean };
+
+function ConfirmDialog({ opts, onClose }: { opts: ConfirmOpts; onClose: (ok: boolean) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose(false);
+      if (e.key === "Tab" && ref.current) {
+        const els = [...ref.current.querySelectorAll<HTMLElement>("button")];
+        const i = els.indexOf(document.activeElement as HTMLElement);
+        if (e.shiftKey && i <= 0) { e.preventDefault(); els[els.length - 1].focus(); }
+        else if (!e.shiftKey && i === els.length - 1) { e.preventDefault(); els[0].focus(); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); prev?.focus(); };
+  }, [onClose]);
+  return (
+    <div className="modal-backdrop" style={{ alignItems: "center" }} onMouseDown={(e) => e.target === e.currentTarget && onClose(false)}>
+      <div ref={ref} className="modal confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body" data-testid="confirm-dialog">
+        <h2 id="confirm-title" className="row" style={{ gap: 10 }}>
+          <Icon name={opts.danger ? "alert" : "info"} size={18} />
+          {opts.title}
+        </h2>
+        <div id="confirm-body" className="prose" style={{ color: "var(--ink-2)", marginTop: 8 }}>{opts.body}</div>
+        <div className="form-actions" style={{ marginTop: 20 }}>
+          <button onClick={() => onClose(false)} data-autofocus data-testid="confirm-cancel">Cancel</button>
+          <button className={opts.danger ? "btn-danger" : "btn-primary"} onClick={() => onClose(true)} data-testid="confirm-ok">{opts.confirm}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function useConfirm(): [ReactNode, (opts: ConfirmOpts) => Promise<boolean>] {
+  const [state, setState] = useState<{ opts: ConfirmOpts; resolve: (ok: boolean) => void } | null>(null);
+  const ask = (opts: ConfirmOpts) => new Promise<boolean>((resolve) => setState({ opts, resolve }));
+  const node = state ? (
+    <ConfirmDialog
+      opts={state.opts}
+      onClose={(ok) => {
+        state.resolve(ok);
+        setState(null);
+      }}
+    />
+  ) : null;
+  return [node, ask];
+}

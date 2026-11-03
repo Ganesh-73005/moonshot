@@ -1,7 +1,39 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api, getUser, type Tier } from "../api";
 import { contractTerm, termLabel, totalMonths } from "../contract";
 import { ErrorBanner, Gauge, Icon, PageHeader, displayName, humanize } from "../ui";
+
+type Errors = Record<string, string>;
+
+const LABELS: Record<string, string> = {
+  name: "Vendor name",
+  category: "Category",
+  data_sensitivity: "Data it will handle",
+  business_criticality: "Business criticality",
+  access_level: "Access to our systems",
+  impact_facing: "Who it affects",
+  business_owner: "Business owner",
+  vendor_contact_email: "Vendor security contact",
+  contract: "Contract period",
+};
+
+function validateField(name: string, value: string): string | null {
+  const v = value.trim();
+  if (name === "category" && !v) return "Choose a category.";
+  if (["name", "business_owner"].includes(name) && !v) return `Enter the ${LABELS[name].toLowerCase()}.`;
+  if (["data_sensitivity", "business_criticality", "access_level", "impact_facing"].includes(name) && !v) return `Choose one option for ${LABELS[name].toLowerCase()}.`;
+  if (name === "vendor_contact_email" && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return "Enter an email address like security@vendor.com.";
+  return null;
+}
+
+function FieldError({ id, msg }: { id: string; msg?: string }) {
+  return msg ? (
+    <span className="field-error" id={id}>
+      <Icon name="alert" size={14} />
+      {msg}
+    </span>
+  ) : null;
+}
 
 const CATEGORIES = [
   "saas_business_app", "cloud_infrastructure", "security_tooling", "hr_payroll", "finance_payments",
@@ -45,9 +77,9 @@ const POINTS: Record<string, Record<string, number>> = {
 };
 const previewTier = (s: number): Tier => (s >= 75 ? "critical" : s >= 50 ? "high" : s >= 25 ? "medium" : "low");
 
-function Options({ name, label, options, value, onChange, meter = true, hint }: { name: string; label: string; options: Option[]; value: string; onChange: (v: string) => void; meter?: boolean; hint?: string }) {
+function Options({ name, label, options, value, onChange, meter = true, hint, error }: { name: string; label: string; options: Option[]; value: string; onChange: (v: string) => void; meter?: boolean; hint?: string; error?: string }) {
   return (
-    <fieldset className="field" style={{ border: 0, padding: 0, margin: 0 }}>
+    <fieldset className="field" id={`field-${name}`} tabIndex={-1} style={{ border: 0, padding: 0, margin: 0 }} aria-invalid={error ? true : undefined} aria-describedby={error ? `${name}-error` : undefined} data-testid={`field-${name}`}>
       <legend className="field-label" style={{ marginBottom: 6 }}>
         {label}
         <span className="req">*</span>
@@ -55,7 +87,7 @@ function Options({ name, label, options, value, onChange, meter = true, hint }: 
       <div className="options cols-4">
         {options.map(([v, title, desc], i) => (
           <label key={v} className="option">
-            <input type="radio" name={name} value={v} required checked={value === v} onChange={() => onChange(v)} />
+            <input type="radio" name={name} value={v} checked={value === v} onChange={() => onChange(v)} data-testid={`${name}-${v}`} />
             <span className="option-title">
               {title}
               {meter && (
@@ -63,6 +95,7 @@ function Options({ name, label, options, value, onChange, meter = true, hint }: 
                   {options.map((_, j) => (
                     <i key={j} className={j <= i ? "on" : ""} />
                   ))}
+                  <span className="sr-only">level {i + 1} of {options.length}</span>
                 </span>
               )}
             </span>
@@ -71,6 +104,7 @@ function Options({ name, label, options, value, onChange, meter = true, hint }: 
         ))}
       </div>
       {hint && <span className="field-hint">{hint}</span>}
+      <FieldError id={`${name}-error`} msg={error} />
     </fieldset>
   );
 }
@@ -102,6 +136,27 @@ const NEXT_STEPS: [string, string, string][] = [
 export function NewVendor() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState<Errors>({});
+  const [summary, setSummary] = useState<Errors | null>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const blur = (e: { target: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement }) => {
+    const msg = validateField(e.target.name, e.target.value);
+    setErrors((prev) => {
+      const next = { ...prev };
+      if (msg) next[e.target.name] = msg;
+      else delete next[e.target.name];
+      return next;
+    });
+  };
+  const err = (name: string) => (errors[name] ? { "aria-invalid": true as const, "aria-describedby": `${name}-error` } : {});
+  const setPick = (key: keyof typeof profile, v: string) => {
+    setProfile({ ...profile, [key]: v });
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
   const [profile, setProfile] = useState({ data_sensitivity: "", business_criticality: "", access_level: "", uses_ai: false, impact_facing: "" });
   const [contract, setContract] = useState({ start: "", end: "" });
   const term = contractTerm(contract.start, contract.end);
@@ -120,11 +175,20 @@ export function NewVendor() {
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (contractError) {
-      setError(contractError);
+    const form = new FormData(e.currentTarget);
+    const found: Errors = {};
+    for (const k of ["name", "category", "data_sensitivity", "business_criticality", "access_level", "impact_facing", "business_owner", "vendor_contact_email"]) {
+      const msg = validateField(k, ((form.get(k) as string) ?? "").toString());
+      if (msg) found[k] = msg;
+    }
+    if (contractError) found.contract = contractError;
+    setErrors(found);
+    if (Object.keys(found).length) {
+      setSummary(found);
+      setTimeout(() => summaryRef.current?.focus(), 0);
       return;
     }
-    const form = new FormData(e.currentTarget);
+    setSummary(null);
     const text = (k: string) => ((form.get(k) as string) || "").trim() || null;
     setSubmitting(true);
     setError(null);
@@ -167,27 +231,67 @@ export function NewVendor() {
         title="New vendor request"
         sub="Tell us who the vendor is and how we'll use them. The inherent risk tier is computed the moment you submit; AI agents enrich everything else during assessment."
       />
+      <ol className="steps-cue" aria-label="Request progress" data-testid="intake-steps">
+        <li aria-current="step">
+          <span className="n">1</span>Intake
+        </li>
+        <li aria-hidden className="bar" />
+        <li>
+          <span className="n">2</span>Collect evidence
+        </li>
+        <li aria-hidden className="bar" />
+        <li>
+          <span className="n">3</span>Review &amp; proceed
+        </li>
+      </ol>
+
+      {summary && (
+        <div className="error-summary" role="alert" tabIndex={-1} ref={summaryRef} data-testid="error-summary">
+          <h2>
+            <Icon name="alert" size={16} />
+            Fix {Object.keys(summary).length} problem{Object.keys(summary).length === 1 ? "" : "s"} before submitting
+          </h2>
+          <ul>
+            {Object.entries(summary).map(([k, msg]) => (
+              <li key={k}>
+                <a
+                  href={`#field-${k}`}
+                  onClick={(ev) => {
+                    ev.preventDefault();
+                    const el = document.getElementById(`field-${k}`);
+                    el?.scrollIntoView({ block: "center" });
+                    (el?.querySelector("input") ?? el)?.focus();
+                  }}
+                >
+                  {LABELS[k]}: {msg}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <ErrorBanner error={error} />
 
       <div className="grid split">
-        <form className="card" onSubmit={submit}>
+        <form className="card" onSubmit={submit} noValidate data-testid="new-vendor-form">
           <Section n={1} title="Vendor" sub="Who they are and what we'll use them for">
             <div className="grid cols-2" style={{ gap: 16 }}>
               <label className="field">
                 <span className="field-label">
                   Vendor name<span className="req">*</span>
                 </span>
-                <input name="name" required maxLength={255} placeholder="e.g. Northwind Payroll" />
+                <input id="field-name" name="name" required aria-required maxLength={255} autoComplete="organization" placeholder="e.g. Northwind Payroll" onBlur={blur} {...err("name")} data-testid="input-name" />
+                <FieldError id="name-error" msg={errors.name} />
               </label>
               <label className="field">
                 <span className="field-label">Website</span>
-                <input name="website" placeholder="https://vendor.com" />
+                <input name="website" inputMode="url" autoComplete="url" placeholder="https://vendor.com" data-testid="input-website" />
                 <span className="field-hint">Enables outside-in checks: TLS, SPF/DMARC, security.txt, CVEs.</span>
               </label>
             </div>
             <label className="field">
               <span className="field-label">Trust portal link</span>
-              <input name="trust_portal_url" inputMode="url" placeholder="https://trust.vendor.com" />
+              <input name="trust_portal_url" inputMode="url" placeholder="https://trust.vendor.com" data-testid="input-trust-portal" />
               <span className="field-hint">
                 Optional. Public documents are collected from it, and access to the gated ones is requested for you. Leave it empty and we look for one on
                 the vendor's website.
@@ -197,7 +301,7 @@ export function NewVendor() {
               <span className="field-label">
                 Category<span className="req">*</span>
               </span>
-              <select name="category" required defaultValue="">
+              <select id="field-category" name="category" required aria-required defaultValue="" onBlur={blur} onChange={blur} {...err("category")} data-testid="input-category">
                 <option value="" disabled>
                   Select a category…
                 </option>
@@ -207,28 +311,30 @@ export function NewVendor() {
                   </option>
                 ))}
               </select>
+              <FieldError id="category-error" msg={errors.category} />
             </label>
             <label className="field">
               <span className="field-label">What will we use this vendor for?</span>
-              <textarea name="description" rows={3} maxLength={4000} placeholder="Business purpose, teams involved, data flows…" />
+              <textarea name="description" rows={3} maxLength={4000} placeholder="Business purpose, teams involved, data flows…" data-testid="input-description" />
             </label>
           </Section>
 
           <Section n={2} title="Risk profile" sub="Drives the inherent risk score and which documents we ask for — agents will flag it if the evidence says otherwise">
-            <Options name="data_sensitivity" label="Data it will handle" options={SENSITIVITY} value={profile.data_sensitivity} onChange={(v) => setProfile({ ...profile, data_sensitivity: v })} />
-            <Options name="business_criticality" label="Business criticality" options={CRITICALITY} value={profile.business_criticality} onChange={(v) => setProfile({ ...profile, business_criticality: v })} />
-            <Options name="access_level" label="Access to our systems" options={ACCESS} value={profile.access_level} onChange={(v) => setProfile({ ...profile, access_level: v })} />
+            <Options name="data_sensitivity" label="Data it will handle" options={SENSITIVITY} value={profile.data_sensitivity} onChange={(v) => setPick("data_sensitivity", v)} error={errors.data_sensitivity} />
+            <Options name="business_criticality" label="Business criticality" options={CRITICALITY} value={profile.business_criticality} onChange={(v) => setPick("business_criticality", v)} error={errors.business_criticality} />
+            <Options name="access_level" label="Access to our systems" options={ACCESS} value={profile.access_level} onChange={(v) => setPick("access_level", v)} error={errors.access_level} />
             <Options
               name="impact_facing"
               label="Who it affects"
               options={FACING}
               value={profile.impact_facing}
-              onChange={(v) => setProfile({ ...profile, impact_facing: v })}
+              onChange={(v) => setPick("impact_facing", v)}
+              error={errors.impact_facing}
               meter={false}
               hint="Doesn't change the risk score. It decides which extra documents we ask the vendor for (for example an accessibility report for customer-facing tools)."
             />
             <label className="switch" style={{ position: "relative" }}>
-              <input type="checkbox" name="uses_ai_declared" checked={profile.uses_ai} onChange={(e) => setProfile({ ...profile, uses_ai: e.target.checked })} />
+              <input type="checkbox" role="switch" data-testid="input-uses-ai" name="uses_ai_declared" checked={profile.uses_ai} onChange={(e) => setProfile({ ...profile, uses_ai: e.target.checked })} />
               <span className="switch-track" aria-hidden />
               <span className="grow">
                 <span className="strong">We plan to use AI features of this product</span>
@@ -244,21 +350,23 @@ export function NewVendor() {
                 <span className="field-label">
                   Business owner<span className="req">*</span>
                 </span>
-                <input name="business_owner" required defaultValue={getUser()} />
+                <input id="field-business_owner" name="business_owner" required aria-required defaultValue={getUser()} onBlur={blur} {...err("business_owner")} data-testid="input-business-owner" />
+                <FieldError id="business_owner-error" msg={errors.business_owner} />
                 <span className="field-hint">Receives escalations and owns any risk acceptance.</span>
               </label>
               <label className="field">
                 <span className="field-label">Vendor security contact</span>
-                <input name="vendor_contact_email" type="email" placeholder="security@vendor.com" />
+                <input id="field-vendor_contact_email" name="vendor_contact_email" type="email" autoComplete="email" placeholder="security@vendor.com" onBlur={blur} {...err("vendor_contact_email")} data-testid="input-contact-email" />
+                <FieldError id="vendor_contact_email-error" msg={errors.vendor_contact_email} />
                 <span className="field-hint">Where questionnaires are sent, and who we name on a trust portal's request form.</span>
               </label>
               <label className="field">
                 <span className="field-label">Vendor contact name</span>
-                <input name="vendor_contact_name" maxLength={255} placeholder="e.g. Sam Lee" />
+                <input name="vendor_contact_name" maxLength={255} autoComplete="name" placeholder="e.g. Sam Lee" data-testid="input-contact-name" />
               </label>
               <label className="field">
                 <span className="field-label">Vendor contact phone</span>
-                <input name="vendor_contact_phone" type="tel" maxLength={64} placeholder="+1 555 0100" />
+                <input name="vendor_contact_phone" type="tel" autoComplete="tel" maxLength={64} placeholder="+1 555 0100" data-testid="input-contact-phone" />
               </label>
             </div>
           </Section>
@@ -267,14 +375,14 @@ export function NewVendor() {
             <div className="grid cols-2" style={{ gap: 16 }}>
               <label className="field">
                 <span className="field-label">Start date</span>
-                <input type="date" value={contract.start} max={contract.end || undefined} onChange={(e) => setContract({ ...contract, start: e.target.value })} />
+                <input id="field-contract" type="date" data-testid="input-contract-start" value={contract.start} max={contract.end || undefined} onChange={(e) => setContract({ ...contract, start: e.target.value })} />
               </label>
               <label className="field">
                 <span className="field-label">End date</span>
-                <input type="date" value={contract.end} min={contract.start || undefined} onChange={(e) => setContract({ ...contract, end: e.target.value })} />
+                <input type="date" data-testid="input-contract-end" aria-invalid={contractError ? true : undefined} value={contract.end} min={contract.start || undefined} onChange={(e) => setContract({ ...contract, end: e.target.value })} />
               </label>
             </div>
-            <div className="term-line" aria-live="polite">
+            <div className="term-line" aria-live="polite" data-testid="contract-term">
               <Icon name="calendar" size={15} />
               {term ? (
                 <>
@@ -297,10 +405,10 @@ export function NewVendor() {
               Submitting as <strong>{displayName(getUser())}</strong> · recorded in the audit ledger
             </span>
             <div className="form-actions">
-              <a className="btn btn-ghost" href="#/">
+              <a className="btn btn-ghost" href="#/" data-testid="cancel-button">
                 Cancel
               </a>
-              <button className="btn-primary" type="submit" disabled={submitting}>
+              <button className="btn-primary" type="submit" disabled={submitting} aria-busy={submitting} data-testid="submit-request-button">
                 {submitting ? <span className="spinner" style={{ borderTopColor: "#fff" }} /> : <Icon name="send" size={15} />}
                 {submitting ? "Submitting…" : "Submit request"}
               </button>
@@ -309,7 +417,7 @@ export function NewVendor() {
         </form>
 
         <aside className="stack" style={{ position: "sticky", top: 84 }}>
-          <section className="card">
+          <section className="card" data-testid="inherent-preview">
             <div className="card-head">
               <div>
                 <h2 className="card-title">

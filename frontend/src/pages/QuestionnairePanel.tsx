@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type AnswerType, type OutboundMessage, type PortalLink as PortalLinkInfo, type Questionnaire, type QuestionnaireItem } from "../api";
-import { Callout, Card, ErrorBanner, Icon, StatusPill, TierBadge, formatDate, formatDay, humanize, timeAgo } from "../ui";
+import { Callout, Card, ErrorBanner, Icon, StatusPill, TierBadge, formatDate, formatDay, humanize, timeAgo, useConfirm } from "../ui";
 
 const SOURCE_LABEL: Record<QuestionnaireItem["source"], string> = {
   library: "Standard",
@@ -371,13 +371,20 @@ function VendorLinkBox({ vendorId, refreshKey }: { vendorId: number; refreshKey:
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dialog, ask] = useConfirm();
 
   useEffect(() => {
     api.portalLink(vendorId).then(setInfo).catch((e: Error) => setError(e.message));
   }, [vendorId, refreshKey]);
 
   async function rotate() {
-    if (!window.confirm("Replace the vendor's link? The old one stops working immediately, so anything you've already sent them will need the new link.")) return;
+    const ok = await ask({
+      title: "Replace the vendor's link?",
+      body: "The old link stops working immediately, so anything you've already sent the vendor will need the new link.",
+      confirm: "Replace link",
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       setInfo(await api.rotatePortalLink(vendorId));
@@ -390,7 +397,8 @@ function VendorLinkBox({ vendorId, refreshKey }: { vendorId: number; refreshKey:
 
   if (!info) return error ? <ErrorBanner error={error} /> : null;
   return (
-    <div className="vlink">
+    <div className="vlink" data-testid="vendor-link-box">
+      {dialog}
       <div className="row-between" style={{ flexWrap: "wrap", gap: 8 }}>
         <span className="row strong small">
           <Icon name="link" size={14} />
