@@ -1,0 +1,60 @@
+{
+  "summary": "Frontend-only E2E test of the redesigned AI TPRA console (React 19 + Vite) against the in-memory mock backend, using Playwright at 1920x1080 and 390x844, in light and dark themes. Almost everything listed in the review request works: the app shell (Acting-as select, user menu, theme System/Light/Dark, '/' focuses search, search goes to #/vendors?q=), the dashboard (5 KPIs; Sam sees the sign-off queue first, Priya the review queue), vendor inventory (stage tabs, KPI buttons, tier chips, stage and sort selects, page resets to 1 when a filter changes, no-match state with Clear filters), new vendor (error summary with links that focus fields, inline errors, radio cards, live inherent gauge, contract term, duplicate 'Atlas Cloud' error, redirect to #/vendors/13), vendor page (single header primary action that scrolls to the review panel, arrow/Home/End tab keys, Reject confirm dialog with Esc to cancel, Approve moving the vendor to awaiting_signoff), sign-off with segregation of duties (Priya disabled with reason, Sam signs off and Atlas becomes Approved), Findings master-detail (severity chips, search, agent filter, unverified label, Show in document modal, control chips switching to the Controls tab), Evidence (Check now, upload), Questionnaire (Replace link uses the custom confirm dialog, not window.confirm; draft then Send 3 questions), Monitoring (acknowledge, dismiss, escalate), Quanta AI ('Gathering evidence…' disabled with a reason; Start anyway works after a mock-backend fix), the vendor portal (no console chrome, yes/no and text autosave on blur, submit), the mobile drawer and card lists, and no horizontal overflow on the vendor page. Problems found: (1) React duplicate-key console errors on the Audit trail tab; (2) the skip link is not the first Tab stop on first load in dev because StrictMode focuses <main>; (3) Escape does not close the mobile drawer; (4) horizontal overflow at 390px on Dashboard (tooltip) and How assessments work (card grid); (5) the Controls heatmap shows only headers and the control-chip jump doesn't land on the control, both because of mock data; (6) a mock-backend 500 on Start anyway, which I fixed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/vendors/{id}/assessments (MOCK)", "issue": "Returned 500 (TypeError: None * int in make_assessment, segment_id = ev_id*10+3) for vendors with no evidence, e.g. Quanta AI 'Start anyway'. FIXED in /app/backend/server.py line 94."},
+      {"endpoint": "GET /api/audit?entity_type=...&entity_id=... (MOCK)", "issue": "Returns the same global events for the vendor query and the assessment query (no filtering), so the frontend merge produces duplicate ids and React key warnings."},
+      {"endpoint": "GET /api/assessments/{id}/controls (MOCK)", "issue": "source values are display labels ('SOC 2', 'ISO 27001') rather than enum keys (soc2_tsc, iso27001), so the Control coverage heatmap renders an empty tbody. control_ids (SEC-00, SEC-03…) don't include the findings' linked controls (SEC-07, RES-02…), so the control-chip jump can't focus the control."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AuditTrail (VendorDetail.tsx ~L1329)", "issue": "Console error 'Encountered two children with the same key' (about 11 per render) when vendor and assessment audit events overlap. The merged list isn't de-duplicated by id. Mock-triggered, but cheap to harden: dedupe by id before sorting.", "selector": "[data-testid=vendor-tab-audit]", "priority": "MEDIUM"},
+      {"component": "App.tsx route-focus effect (L307-312)", "issue": "Under React StrictMode (dev), the double-run effect sets firstRender=false on the first run, then focuses <main> on the second. Focus starts inside main on initial load, so the first Tab goes to dashboard-new-vendor and skips the skip link. Fix: compare against a prevPath ref instead of a firstRender flag.", "selector": "[data-testid=skip-link]", "priority": "MEDIUM"},
+      {"component": "Mobile drawer (sidebar)", "issue": "Escape does not close the drawer; only the X button or a backdrop click does. The open drawer also covers open-menu-button.", "selector": "[data-testid=sidebar], [data-testid=open-menu-button]", "priority": "LOW"},
+      {"component": "Dashboard @390px", "issue": "Page overflows horizontally (scrollWidth 400 vs 390). The hidden .tooltip (opacity 0, still in layout) on the portfolio .dist-seg extends past the viewport.", "selector": "span.tooltip", "priority": "MEDIUM"},
+      {"component": "How assessments work (#/platform) @390px", "issue": "Page overflows horizontally (scrollWidth 406 vs 390). A card with 'grid cols-2' and '.control' children overflows by about 16px.", "selector": "section.card .grid.cols-2", "priority": "MEDIUM"},
+      {"component": "Vendors filter bar @390px", "issue": "The 'Sort: highest risk' select sticks out past the card's right edge (page scrollWidth 391/390).", "selector": "[data-testid=vendors-sort-select]", "priority": "LOW"},
+      {"component": "Start anyway error handling", "issue": "When startAssessment fails, the error goes to the page-level error state, so nothing is shown next to the 'Start without all evidence' button. The user scrolled down in the Evidence tab sees no feedback.", "selector": "Evidence tab StartAnyway", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Findings control chip -> Controls tab", "issue": "The tab switches correctly, but the target control isn't focused or filtered because the mock controls list lacks SEC-07 etc. When the target is missing, ControlCoverage silently keeps the default 'Not met' filter. Consider falling back to q=controlId so the user sees an empty state rather than unrelated rows.", "affected_selectors": ["[data-testid^=control-chip-]"]},
+      {"flow": "Controls heatmap", "issue": "When control sources don't match SOURCE_LABEL keys, the heatmap shows column headers with no rows. Add an empty-state row or fall back to the raw source label.", "affected_selectors": ["table.heatmap"]}
+    ],
+    "design_issues": [
+      {"screen": "Vendor page (desktop)", "issues": ["Two identical solid-blue primary buttons (header 'Continue analyst review' and the Next step rail card) compete with each other, against the 'ONE primary action' requirement. Make the rail one secondary/ghost.", "The header primary button wraps below the stat strips, leaving an uneven gap on the right."]},
+      {"screen": "Vendor page (390px)", "issues": ["Header layout is awkward: the name sits above while the NP avatar floats left of the meta block, and the stat cards don't fill the width (the first ends at about 318px, the Evidence/Findings card is small)."]},
+      {"screen": "Questionnaire vendor link box", "issues": ["The 'Copy' and 'Replace link' buttons inherit the monospace font from the link box and look tiny and inconsistent with other buttons."]},
+      {"screen": "Findings list", "issues": ["Search placeholder is truncated ('Search findings or c') because the input shares a row with the agent select."]},
+      {"screen": "Topbar (390px)", "issues": ["Global search is hidden on mobile with no alternative entry point (e.g. a search icon)."]},
+      {"screen": "New vendor", "issues": ["Contract dates use the browser's native date picker (input type=date) rather than a styled calendar.", "The error summary stays visible after all fields are corrected; it only updates on the next submit."]},
+      {"screen": "Vendor portal", "issues": ["The selected state of the Yes/No/N.A. segmented control (white on light grey) is low contrast."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Dedupe audit events by id in AuditTrail before sorting (removes the duplicate-key console errors); optionally fix mock /api/audit filtering",
+    "Fix the route-focus effect in App.tsx so <main> isn't focused on first load under StrictMode (use a prevPath ref); the skip link should be the first Tab stop",
+    "Add an Escape handler to close the mobile drawer and return focus to open-menu-button",
+    "Fix horizontal overflow at 390px on Dashboard (.tooltip in .dist-seg: use visibility:hidden/display:none or clip) and #/platform (grid cols-2 card)",
+    "Constrain the vendors filter-bar selects at 390px (full width or wrap)",
+    "Make the Next step rail button secondary so the vendor page has exactly one solid primary action",
+    "Show the Start anyway error inline near the button",
+    "Optional mock-data fixes: use enum source keys (soc2_tsc, iso27001…) in mock controls and include the findings' control_ids so the heatmap and control-chip jump can be verified"
+  ],
+  "critical_code_review_comments": [
+    "VendorDetail.tsx is 1862 lines and QuestionnairePanel.tsx 711; split VendorDetail (PrimaryAction, Findings, AuditTrail, ReviewPanel, SignoffPanel) into modules",
+    "App.tsx firstRender-ref pattern isn't StrictMode-safe",
+    "AuditTrail merges two API results without dedupe and has no catch on Promise.all (an unhandled rejection leaves the skeleton forever)",
+    "ControlCoverage focus effect silently no-ops when the control isn't found"
+  ],
+  "updated_files": ["/app/backend/server.py (mock only: guarded segment_id when ev_id is None, line 94)"],
+  "success_rate": {"backend": "N/A (frontend-only; 1 mock 500 found and fixed)", "frontend": "~90% (all core flows pass; 7 minor/medium UI bugs, 2 mock-data integration gaps, plus design notes)"},
+  "seed_data_creation": "Created vendor 'TEST Zephyr Labs' (#13) via the UI, uploaded test_ev.pdf to Northwind, approved Northwind, signed off Atlas Cloud, drafted and sent a Brightdesk questionnaire, and answered and submitted the Sentinel portal. The mock state was reset by a backend restart mid-run; run 'sudo supervisorctl restart backend' to reset again.",
+  "test_credentials": "No login; personas are priya.analyst, sam.approver and jordan.requestor via the acting-as select. /app/memory/test_credentials.md not needed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Mock backend state resets on restart. Vendor ids: 1 Northwind (awaiting_review), 2 Atlas (awaiting_signoff, reviewed by Priya), 3 Brightdesk (approved, monitoring events), 5 Quanta (intake, evidence not ready), 6 Pixel (re-review, monitoring), 8 Sentinel (portal tok-sentinel-8). Retest: audit tab console errors, skip link first Tab on fresh load, Escape on the mobile drawer, 390px overflow on #/ and #/platform, and a single solid primary action on the vendor page.",
+  "rca of the issue": "Skip link: StrictMode double-invokes the useEffect([path]) in App.tsx. Run 1 sets firstRender.current=false, run 2 calls mainRef.focus(), so focus starts inside main on load. Duplicate keys: the mock /api/audit ignores entity filters, so the vendor and assessment lists overlap and AuditTrail concatenates them without dedupe. Start anyway 500: mock make_assessment computes ev_id*10 when ev_id is None (vendor with no evidence_ids); now guarded."
+}

@@ -292,7 +292,6 @@ export function App() {
   const [drawer, setDrawer] = useState(false);
   const [theme, setTheme] = useTheme();
   const mainRef = useRef<HTMLElement>(null);
-  const firstRender = useRef(true);
 
   const portalMatch = route.match(/^#\/portal\/([\w.-]+)$/);
   const [path, query] = route.split("?");
@@ -304,12 +303,26 @@ export function App() {
     api.verifyAudit().then(setChain).catch(() => setChain(null));
   }, [route, user]);
 
+  const prevPath = useRef(path);
   useEffect(() => {
+    if (prevPath.current === path) return;
+    prevPath.current = path;
     window.scrollTo(0, 0);
     setDrawer(false);
-    if (firstRender.current) firstRender.current = false;
-    else mainRef.current?.focus({ preventScroll: true });
+    mainRef.current?.focus({ preventScroll: true });
   }, [path]);
+
+  useEffect(() => {
+    if (!drawer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setDrawer(false);
+        document.querySelector<HTMLElement>("[data-testid=open-menu-button]")?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawer]);
 
   useEffect(() => {
     if (portalMatch) return;

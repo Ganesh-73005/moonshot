@@ -1327,7 +1327,7 @@ function AuditTrail({ vendorId, assessmentId, refreshKey }: { vendorId: number; 
   const [chain, setChain] = useState<{ valid: boolean; events_checked: number } | null>(null);
   useEffect(() => {
     Promise.all([api.audit("vendor", vendorId), assessmentId ? api.audit("assessment", assessmentId) : Promise.resolve([])]).then(([v, a]) =>
-      setEvents([...v, ...a].sort((x, y) => y.id - x.id)),
+      setEvents([...new Map([...v, ...a].map((e) => [e.id, e])).values()].sort((x, y) => y.id - x.id)),
     );
     api.verifyAudit().then(setChain);
   }, [vendorId, assessmentId, refreshKey]);
@@ -1389,8 +1389,8 @@ function tabKeyHandler(tabs: TabId[], tab: TabId, setTab: (t: TabId) => void) {
   };
 }
 
-function PrimaryButton({ p, starting, testId }: { p: Primary; starting: boolean; testId: string }) {
-  const cls = p.style === "ai" ? "btn-ai" : p.style === "primary" ? "btn-primary" : "";
+function PrimaryButton({ p, starting, testId, quiet }: { p: Primary; starting: boolean; testId: string; quiet?: boolean }) {
+  const cls = quiet ? "" : p.style === "ai" ? "btn-ai" : p.style === "primary" ? "btn-primary" : "";
   return (
     <button className={`${cls} btn-lg`} onClick={p.run} aria-disabled={p.disabled || undefined} disabled={starting} data-testid={testId}
       onClickCapture={(e) => p.disabled && e.preventDefault()} style={p.disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}>
@@ -1413,7 +1413,7 @@ function NextStep({ p, secondary, starting }: { p: Primary | null; secondary: Re
         </div>
       </div>
       <div className="actions">
-        {p && p.run && <PrimaryButton p={p} starting={starting} testId="next-step-primary" />}
+        {p && p.run && <PrimaryButton p={p} starting={starting} testId="next-step-primary" quiet />}
         {p?.reason && <div className="small muted">{p.reason}</div>}
         {secondary}
       </div>
